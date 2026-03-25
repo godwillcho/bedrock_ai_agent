@@ -1,0 +1,79 @@
+SC211 Search Relevance Pipeline
+================================
+
+When a caller asks for help, the search goes through a 4-stage pipeline:
+
+
+Stage 1: Taxonomy Matching
+---------------------------
+The caller's phrase is matched against 689 official 211 service terms using
+a Python module (taxonomy.py) loaded in memory. It uses two indexes:
+
+  - TERM_INDEX: matches words that appear in the official service term name
+    (high confidence)
+  - SEARCH_INDEX: matches against 2,115 broader search keywords
+    (lower confidence)
+
+Example: "transportation" matches BT-4500.4500 Local Automobile Transportation,
+BT-4500.6500-500 Non-Emergency Medical Transportation, etc.
+
+
+Stage 2: Multi-Source Search
+-----------------------------
+The caller's original phrase is sent to the Sophia API with the county
+auto-detected from their zip code. Simultaneously, up to 3 synonym terms
+from the taxonomy match are searched in parallel and merged (deduplicated
+by service ID).
+
+
+Stage 3: Relevance Scoring
+----------------------------
+Each result is classified into tiers based on how well it matches:
+
+  Tier 1 - Name + Code (best match):
+    Service name contains the search phrase AND its primary taxonomy code matches.
+    Example: "Transportation Services - ModivCare"
+
+  Tier 2 - Name only:
+    Service name contains the search phrase but no taxonomy code match.
+    Example: "Mental Health Services - Roper St. Francis"
+
+  Tier 3 - Code only:
+    Primary taxonomy code matches but name doesn't mention the phrase.
+    Example: "VA Medical Center" (has BT transportation code but name says Medical)
+
+  Tier 4 - Secondary:
+    Taxonomy code matches but only as a secondary feature, not the service's
+    main purpose.
+    Example: A food pantry that offers rides to meals
+
+  Tier 5 - Unmatched:
+    No taxonomy code or name match. Generic nearby social services.
+
+
+Stage 4: Combined Ranking
+---------------------------
+Results are sorted by relevance first, distance second:
+
+  1. Within 50 miles: higher tier always wins. Distance breaks ties within
+     the same tier.
+
+  2. Beyond 50 miles: still grouped by tier but deprioritized below nearby
+     results.
+
+  3. If no core matches exist (0 in tiers 1-3): the agent honestly tells
+     the caller "I wasn't able to find specific services in your area" and
+     offers a family coach instead.
+
+  4. Secondary/unmatched results are separated with a "You may also get help
+     from:" demarcation line.
+
+This ensures a transportation service 7 miles away always ranks above a food
+pantry 0.2 miles away when the caller asked for transportation.
+
+
+Files involved:
+  - lambdas/search/taxonomy.py       Taxonomy module (TERM_INDEX, SEARCH_INDEX, match, match_all)
+  - lambdas/search/lambda_function.py  Search Lambda (relevance scoring, ranking, API calls)
+  - lambdas/search/generate_taxonomy.py  Generates taxonomy.py from the JSON source file
+  - all_terms_taxonomy_with_search_terms.json  Source taxonomy data (689 terms, 2115 keywords)
