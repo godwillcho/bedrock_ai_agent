@@ -1,0 +1,112 @@
+How taxonomy.py Works
+=====================
+
+What it is
+----------
+A Python module with three lookup dictionaries and two matching functions, all loaded
+into memory when the Lambda starts. 689 service terms, 2,115 search keywords, 805
+term name words.
+
+
+The Three Indexes
+-----------------
+
+1. TAXONOMY - forward index (code -> name)
+
+    TAXONOMY = {
+        "BD-1800.2000": "Food Pantries",
+        "BV-8900.9300-180": "Electric Service Payment Assistance",
+        "BT-4500.6500-500": "Non-Emergency Medical Transportation",
+        ...  # 689 entries
+    }
+
+
+2. SEARCH_INDEX - reverse index (search term -> codes)
+
+    SEARCH_INDEX = {
+        "food pantry": [("BD-1800.2000", "Food Pantries"), ("BD-1800.5000", "Mobile Food Pantry Programs")],
+        "electric bill": [("BV-8900.1700", "Discounted Utility Services"), ...],
+        "rent": [("BH-3800.7000", "Rent Payment Assistance")],
+        ...  # 2,115 entries
+    }
+
+    Each caller phrase maps to multiple taxonomy entries. "food" matches 8 different
+    food programs.
+
+
+3. TERM_INDEX - word-in-name index (word -> codes where that word appears in the
+   official term name)
+
+    TERM_INDEX = {
+        "transportation": [("BT-4500.4500", "Local Automobile Transportation"), ...],
+        "food": [("BD-1800.2000", "Food Pantries"), ("BD-1800.5000", "Mobile Food Pantry Programs"), ...],
+        "mental": [("LR-6200.5000", "Mental Health Occupational Therapy"), ...],
+        ...  # 805 entries
+    }
+
+    This is the highest-confidence index. If "transportation" is in the official term
+    name, that service IS a transportation service - not just something that mentions
+    transportation in passing.
+
+
+The Two Functions
+-----------------
+
+match(phrase) - returns the single best taxonomy match
+
+    "food pantry" -> {
+        "code": "BD-1800.2000",
+        "term": "Food Pantries",
+        "category": "BD",
+        "category_name": "Food/Meals"
+    }
+
+    Priority order:
+    1. TERM_INDEX first - word appears in the official term name (highest confidence)
+    2. SEARCH_INDEX exact - full phrase matches a search term
+    3. SEARCH_INDEX longest sub-phrase - "help with electric bill" matches on "electric bill"
+    4. SEARCH_INDEX individual words - single word fallback
+
+
+match_all(phrase) - returns ALL matching entries (for synonym expansion)
+
+    "food pantry" -> [
+        {"code": "BD-1800.2000", "term": "Food Pantries"},
+        {"code": "BD-1800.5000", "term": "Mobile Food Pantry Programs"},
+        {"code": "BD-1800.1500", "term": "Commodity Supplemental Food Program"},
+        {"code": "BD-1800.2250", "term": "Food Vouchers"},
+        ...
+    ]
+
+    Returns primary matches (TERM_INDEX) first, then secondary (SEARCH_INDEX). The
+    search Lambda uses this for synonym expansion - searches multiple terms in parallel.
+
+
+How the Search Lambda Uses It
+-----------------------------
+
+    # 1. Match the caller's phrase
+    tax_match = taxonomy_match("food pantry")
+    # -> {"code": "BD-1800.2000", "category": "BD"}
+
+    tax_all = taxonomy_match_all("food pantry")
+    # -> [Food Pantries, Mobile Food Pantry, Commodity Food, Food Vouchers, ...]
+
+    # 2. Search Sophia API with original phrase + synonym terms in parallel
+
+    # 3. Score each result:
+    #    - Does result's PRIMARY taxonomy code match? -> Tier 1
+    #    - Does result's name contain "food pantry"?  -> Tier 1
+    #    - Does result's name contain the search term? -> Tier 2
+    #    - Secondary taxonomy code match?             -> Tier 3
+    #    - No match?                                  -> Tier 4 (filler)
+
+    # 4. Sort: relevance first, distance second within each tier
+
+
+Why TERM_INDEX Matters
+----------------------
+Without it, "transportation" matched food programs (because their search_terms list
+mentions "transportation" as a tangential topic). With TERM_INDEX, "transportation"
+only matches services that have "transportation" in their actual name - like "Local
+Automobile Transportation" or "Disability Related Transportation".
